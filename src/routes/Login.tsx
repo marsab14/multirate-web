@@ -1,6 +1,5 @@
-import { useState } from "react";
 import { Button, Card, Form, Input, Typography, message } from "antd";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { api } from "../lib/api";
 import { setSession } from "../lib/session";
@@ -12,26 +11,29 @@ interface FormValues {
 }
 
 export default function Login() {
-  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
-  const location = useLocation();
-  const from =
-    (location.state as { from?: string } | null)?.from ?? "/documents";
+  const [form] = Form.useForm<FormValues>();
 
   const onSubmit = async (values: FormValues) => {
-    setLoading(true);
     try {
       const { data } = await api.post<AuthResponse>("/api/auth/login", values);
+      if (!data.session) {
+        message.error("Login failed. Please try again.");
+        return;
+      }
       setSession(data.session);
-      navigate(from, { replace: true });
+      navigate("/documents");
     } catch (err) {
-      const msg =
-        axios.isAxiosError(err) && err.response?.data?.error?.message
-          ? err.response.data.error.message
-          : "Sign in failed";
-      message.error(msg);
-    } finally {
-      setLoading(false);
+      if (axios.isAxiosError(err)) {
+        const code = err.response?.data?.error?.code;
+        if (code === "INVALID_CREDENTIALS") {
+          message.error("Invalid email or password");
+        } else {
+          message.error(err.response?.data?.error?.message ?? "Login failed");
+        }
+      } else {
+        message.error("Login failed");
+      }
     }
   };
 
@@ -43,34 +45,45 @@ export default function Login() {
         alignItems: "center",
         justifyContent: "center",
         background: "#f5f5f5",
+        padding: 16,
       }}
     >
-      <Card style={{ width: 360 }}>
-        <Typography.Title level={3} style={{ marginTop: 0 }}>
+      <Card style={{ width: 380 }}>
+        <Typography.Title level={3} style={{ marginTop: 0, marginBottom: 24 }}>
           Sign in
         </Typography.Title>
-        <Form<FormValues> layout="vertical" onFinish={onSubmit}>
+        <Form<FormValues>
+          form={form}
+          layout="vertical"
+          onFinish={onSubmit}
+          requiredMark={false}
+        >
           <Form.Item
             name="email"
             label="Email"
-            rules={[{ required: true, type: "email" }]}
+            rules={[
+              { required: true, message: "Please enter your email" },
+              { type: "email", message: "Enter a valid email address" },
+            ]}
           >
-            <Input autoComplete="email" />
+            <Input autoComplete="email" placeholder="you@example.com" />
           </Form.Item>
           <Form.Item
             name="password"
             label="Password"
-            rules={[{ required: true, min: 6 }]}
+            rules={[{ required: true, message: "Please enter your password" }]}
           >
             <Input.Password autoComplete="current-password" />
           </Form.Item>
-          <Button type="primary" htmlType="submit" block loading={loading}>
-            Sign in
-          </Button>
+          <Form.Item style={{ marginBottom: 0 }}>
+            <Button type="primary" htmlType="submit" block>
+              Sign in
+            </Button>
+          </Form.Item>
         </Form>
-        <div style={{ marginTop: 12, textAlign: "center" }}>
+        <div style={{ marginTop: 16, textAlign: "center" }}>
           <Typography.Text type="secondary">
-            No account? <Link to="/signup">Create one</Link>
+            Don&apos;t have an account? <Link to="/signup">Sign up</Link>
           </Typography.Text>
         </div>
       </Card>

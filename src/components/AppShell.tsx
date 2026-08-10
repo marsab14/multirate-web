@@ -1,9 +1,12 @@
 import { useMemo } from "react";
-import { Layout, Menu, Typography, Button, Space } from "antd";
+import { Avatar, Button, Dropdown, Layout, Menu, Space, Typography } from "antd";
+import type { MenuProps } from "antd";
 import {
-  FileTextOutlined,
   BarChartOutlined,
+  DownOutlined,
+  FileTextOutlined,
   LogoutOutlined,
+  UserOutlined,
 } from "@ant-design/icons";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
@@ -20,9 +23,26 @@ export default function AppShell() {
     return "documents";
   }, [location.pathname]);
 
-  const onSignOut = () => {
-    signOut();
-    navigate("/login", { replace: true });
+  const onSignOut = async () => {
+    await signOut();
+    navigate("/login");
+  };
+
+  const menu: MenuProps = {
+    items: [
+      {
+        key: "email",
+        label: user?.email ?? "Signed in",
+        disabled: true,
+      },
+      { type: "divider" },
+      {
+        key: "signout",
+        icon: <LogoutOutlined />,
+        label: "Sign out",
+        onClick: onSignOut,
+      },
+    ],
   };
 
   return (
@@ -71,14 +91,15 @@ export default function AppShell() {
           <Typography.Title level={4} style={{ margin: 0 }}>
             Multi-rate Pricing
           </Typography.Title>
-          <Space>
-            {user?.email ? (
-              <Typography.Text type="secondary">{user.email}</Typography.Text>
-            ) : null}
-            <Button icon={<LogoutOutlined />} onClick={onSignOut}>
-              Sign out
+          <Dropdown menu={menu} trigger={["click"]} placement="bottomRight">
+            <Button type="text" style={{ height: 40 }}>
+              <Space>
+                <Avatar size="small" icon={<UserOutlined />} />
+                <Typography.Text>{user?.email ?? "Account"}</Typography.Text>
+                <DownOutlined style={{ fontSize: 10 }} />
+              </Space>
             </Button>
-          </Space>
+          </Dropdown>
         </Header>
         <Content style={{ padding: 24 }}>
           <Outlet />

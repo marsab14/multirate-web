@@ -1,40 +1,53 @@
-import { useState } from "react";
 import { Button, Card, Form, Input, Typography, message } from "antd";
 import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { api } from "../lib/api";
 import { setSession } from "../lib/session";
-import type { AuthResponse } from "../types/api";
+import type { Session } from "../types/api";
 
 interface FormValues {
   email: string;
   password: string;
+  confirm: string;
+}
+
+interface SignupResponse {
+  session?: Session;
+  requires_confirmation?: boolean;
 }
 
 export default function Signup() {
-  const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  const [form] = Form.useForm<FormValues>();
 
   const onSubmit = async (values: FormValues) => {
-    setLoading(true);
     try {
-      const { data } = await api.post<AuthResponse>("/api/auth/signup", values);
-      // If the backend returns a session, sign the user in immediately.
-      if (data?.session?.access_token) {
-        setSession(data.session);
-        navigate("/documents", { replace: true });
-      } else {
-        message.success("Account created. Please sign in.");
-        navigate("/login", { replace: true });
+      const { data } = await api.post<SignupResponse>("/api/auth/signup", {
+        email: values.email,
+        password: values.password,
+      });
+      if (data.requires_confirmation) {
+        // Rare — README says to disable email confirmation in Supabase.
+        message.info("Check your email to confirm your account.");
+        return;
       }
+      if (!data.session) {
+        message.error("Signup failed. Please try again.");
+        return;
+      }
+      setSession(data.session);
+      navigate("/documents");
     } catch (err) {
-      const msg =
-        axios.isAxiosError(err) && err.response?.data?.error?.message
-          ? err.response.data.error.message
-          : "Sign up failed";
-      message.error(msg);
-    } finally {
-      setLoading(false);
+      if (axios.isAxiosError(err)) {
+        const code = err.response?.data?.error?.code;
+        if (code === "EMAIL_TAKEN") {
+          message.error("An account with this email already exists.");
+        } else {
+          message.error(err.response?.data?.error?.message ?? "Signup failed");
+        }
+      } else {
+        message.error("Signup failed");
+      }
     }
   };
 
@@ -46,34 +59,68 @@ export default function Signup() {
         alignItems: "center",
         justifyContent: "center",
         background: "#f5f5f5",
+        padding: 16,
       }}
     >
-      <Card style={{ width: 360 }}>
-        <Typography.Title level={3} style={{ marginTop: 0 }}>
+      <Card style={{ width: 380 }}>
+        <Typography.Title level={3} style={{ marginTop: 0, marginBottom: 24 }}>
           Create account
         </Typography.Title>
-        <Form<FormValues> layout="vertical" onFinish={onSubmit}>
+        <Form<FormValues>
+          form={form}
+          layout="vertical"
+          onFinish={onSubmit}
+          requiredMark={false}
+        >
           <Form.Item
             name="email"
             label="Email"
-            rules={[{ required: true, type: "email" }]}
+            rules={[
+              { required: true, message: "Please enter your email" },
+              { type: "email", message: "Enter a valid email address" },
+            ]}
           >
-            <Input autoComplete="email" />
+            <Input autoComplete="email" placeholder="you@example.com" />
           </Form.Item>
           <Form.Item
             name="password"
             label="Password"
-            rules={[{ required: true, min: 6 }]}
+            rules={[
+              { required: true, message: "Please enter a password" },
+              { min: 8, message: "Password must be at least 8 characters" },
+            ]}
+            hasFeedback
           >
             <Input.Password autoComplete="new-password" />
           </Form.Item>
-          <Button type="primary" htmlType="submit" block loading={loading}>
-            Sign up
-          </Button>
+          <Form.Item
+            name="confirm"
+            label="Confirm password"
+            dependencies={["password"]}
+            hasFeedback
+            rules={[
+              { required: true, message: "Please confirm your password" },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue("password") === value) {
+                    return Promise.resolve();
+                  }
+                  return Promise.reject(new Error("Passwords do not match"));
+                },
+              }),
+            ]}
+          >
+            <Input.Password autoComplete="new-password" />
+          </Form.Item>
+          <Form.Item style={{ marginBottom: 0 }}>
+            <Button type="primary" htmlType="submit" block>
+              Sign up
+            </Button>
+          </Form.Item>
         </Form>
-        <div style={{ marginTop: 12, textAlign: "center" }}>
+        <div style={{ marginTop: 16, textAlign: "center" }}>
           <Typography.Text type="secondary">
-            Already have one? <Link to="/login">Sign in</Link>
+            Already have an account? <Link to="/login">Sign in</Link>
           </Typography.Text>
         </div>
       </Card>

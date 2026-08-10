@@ -14,18 +14,14 @@ export default function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
 
-      <Route
-        element={
-          <ProtectedRoute>
-            <AppShell />
-          </ProtectedRoute>
-        }
-      >
-        <Route index element={<Navigate to="/documents" replace />} />
-        <Route path="/documents" element={<DocumentsList />} />
-        <Route path="/documents/new" element={<DocumentEditor />} />
-        <Route path="/documents/:id" element={<DocumentEditor />} />
-        <Route path="/reports" element={<Reports />} />
+      <Route element={<ProtectedRoute />}>
+        <Route element={<AppShell />}>
+          <Route index element={<Navigate to="/documents" replace />} />
+          <Route path="/documents" element={<DocumentsList />} />
+          <Route path="/documents/new" element={<DocumentEditor />} />
+          <Route path="/documents/:id" element={<DocumentEditor />} />
+          <Route path="/reports" element={<Reports />} />
+        </Route>
       </Route>
 
       <Route path="*" element={<NotFound />} />

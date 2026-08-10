@@ -1,17 +1,8 @@
-import type { ReactNode } from "react";
-import { Navigate, useLocation } from "react-router-dom";
+import { Navigate, Outlet } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 
-interface Props {
-  children: ReactNode;
-}
-
-export default function ProtectedRoute({ children }: Props) {
+export default function ProtectedRoute() {
   const { session } = useAuth();
-  const location = useLocation();
-
-  if (!session) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  }
-  return <>{children}</>;
+  if (!session) return <Navigate to="/login" replace />;
+  return <Outlet />;
 }
