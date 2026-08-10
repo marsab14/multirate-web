@@ -7,6 +7,25 @@ Frontend for the billing take-home. Companion backend: billing-api.
 2. npm ci
 3. npm run dev
 
+## Try it without a backend
+
+`.env.example` defaults `VITE_MOCK_API=true`, which installs an axios
+adapter (`src/lib/mockApi.ts`) that serves every `/api/*` call from an
+in-browser store persisted to `localStorage`. Full auth flow works —
+login, signup, refresh-on-401, logout, per-user document scoping,
+`409 DOCUMENT_FINALIZED` on write-after-finalize.
+
+- Seeded demo user: `demo@example.com` / `password`
+- Seeded documents: `Sample invoice — widgets`, `March consulting`
+  (finalized), `Design revamp`
+- Access tokens expire after 15 minutes so the refresh path can be
+  exercised in a normal session
+- Wipe the mock DB: run `__resetMockDb()` in the DevTools console, or
+  clear the `billing.mock.db` and `billing.session` keys
+
+To point at the real backend, set `VITE_MOCK_API=false` and configure
+`VITE_API_URL`.
+
 ## Auth architecture
 Frontend never talks to Supabase. Auth calls hit backend endpoints:
 - POST /api/auth/signup, /login → returns { session }

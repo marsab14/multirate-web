@@ -4,17 +4,40 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from "axios";
 import { getSession, setSession } from "./session";
+import { mockAdapter } from "./mockApi";
 import type { ApiErrorEnvelope, Session } from "../types/api";
 
-const baseURL = import.meta.env.VITE_API_URL;
+const mockEnabled = import.meta.env.VITE_MOCK_API === "true";
+const configuredBase = import.meta.env.VITE_API_URL;
+// When mocking we don't hit the network, but axios still wants a valid
+// baseURL to build request URLs against.
+const baseURL = configuredBase || (mockEnabled ? "http://mock.local" : "");
 
 if (!baseURL) {
   throw new Error(
-    "Missing VITE_API_URL. Copy .env.example to .env.local and fill it in.",
+    "Missing VITE_API_URL. Copy .env.example to .env.local. " +
+      "Set VITE_MOCK_API=true to use the in-browser mock backend instead.",
   );
 }
 
 export const api = axios.create({ baseURL });
+
+// A second instance with no interceptors, used for the refresh call so it
+// can't recursively trigger the response interceptor. Both instances share
+// the mock adapter when mocking is enabled.
+const bare = axios.create({ baseURL });
+
+if (mockEnabled) {
+  api.defaults.adapter = mockAdapter;
+  bare.defaults.adapter = mockAdapter;
+  // eslint-disable-next-line no-console
+  console.info(
+    "[mockApi] In-browser mock backend enabled. " +
+      "Demo user: demo@example.com / password. " +
+      "State persists in localStorage under `billing.mock.db`. " +
+      "Run `__resetMockDb()` in DevTools console to wipe.",
+  );
+}
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const session = getSession();
@@ -31,8 +54,8 @@ const doRefresh = async (): Promise<Session | null> => {
   const session = getSession();
   if (!session?.refresh_token) return null;
   try {
-    const { data } = await axios.post<{ session: Session }>(
-      `${baseURL}/api/auth/refresh`,
+    const { data } = await bare.post<{ session: Session }>(
+      "/api/auth/refresh",
       { refresh_token: session.refresh_token },
     );
     setSession(data.session);
@@ -64,7 +87,6 @@ api.interceptors.response.use(
     refreshPromise = null;
 
     if (!newSession) {
-      // Outside the router here — hard redirect resets app state cleanly.
       if (typeof window !== "undefined") {
         window.location.href = "/login";
       }
