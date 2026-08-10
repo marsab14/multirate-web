@@ -1,22 +1,36 @@
-import { Card, Descriptions, Typography } from "antd";
 import { useMemo } from "react";
+import { Card, Divider, Space, Typography } from "antd";
 import { computeDocument, CalcError } from "../lib/calc";
 import { formatMoney } from "../lib/format";
-import type { EditableLineItem } from "./LineItemsEditor";
+import type { LineItem } from "../types/api";
+
+type ComputeLine = Pick<
+  LineItem,
+  "qty" | "unit" | "discount_type" | "discount_value" | "tax_pct"
+>;
 
 interface Props {
-  lines: EditableLineItem[];
-  currency?: string;
+  lines: ComputeLine[];
 }
 
-export default function TotalsPanel({ lines, currency }: Props) {
+const numericStyle: React.CSSProperties = {
+  fontVariantNumeric: "tabular-nums",
+};
+
+const rowStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 16,
+};
+
+export default function TotalsPanel({ lines }: Props) {
   const result = useMemo(() => {
     try {
       return { totals: computeDocument(lines), error: null as string | null };
     } catch (err) {
       const message =
         err instanceof CalcError
-          ? `${err.field}: ${err.message}`
+          ? err.message
           : err instanceof Error
             ? err.message
             : "Invalid line item";
@@ -26,44 +40,45 @@ export default function TotalsPanel({ lines, currency }: Props) {
 
   if (result.error) {
     return (
-      <Card title="Totals" size="small">
+      <Card size="small">
         <Typography.Text type="danger">{result.error}</Typography.Text>
       </Card>
     );
   }
 
   const t = result.totals!;
-  const suffix = currency ? ` ${currency}` : "";
-  const numeric: React.CSSProperties = { fontVariantNumeric: "tabular-nums" };
 
   return (
-    <Card title="Totals" size="small">
-      <Descriptions column={1} size="small">
-        <Descriptions.Item label="Subtotal">
-          <span style={numeric}>
-            {formatMoney(t.subtotal)}
-            {suffix}
+    <Card size="small" style={{ maxWidth: 360 }}>
+      <Space direction="vertical" size={8} style={{ width: "100%" }}>
+        <div style={rowStyle}>
+          <Typography.Text type="secondary">Subtotal</Typography.Text>
+          <span style={numericStyle}>{formatMoney(t.subtotal)}</span>
+        </div>
+        <div style={rowStyle}>
+          <Typography.Text type="secondary">Total discount</Typography.Text>
+          <span style={numericStyle}>
+            {t.total_discount === "0.00" ? "" : "−"}
+            {formatMoney(t.total_discount)}
           </span>
-        </Descriptions.Item>
-        <Descriptions.Item label="Discount">
-          <span style={numeric}>
-            −{formatMoney(t.discount_total)}
-            {suffix}
+        </div>
+        <div style={rowStyle}>
+          <Typography.Text type="secondary">Total tax</Typography.Text>
+          <span style={numericStyle}>
+            {t.total_tax === "0.00" ? "" : "+"}
+            {formatMoney(t.total_tax)}
           </span>
-        </Descriptions.Item>
-        <Descriptions.Item label="Tax">
-          <span style={numeric}>
-            {formatMoney(t.tax_total)}
-            {suffix}
-          </span>
-        </Descriptions.Item>
-        <Descriptions.Item label="Grand total">
-          <Typography.Text strong style={numeric}>
-            {formatMoney(t.grand_total)}
-            {suffix}
+        </div>
+        <Divider style={{ margin: "4px 0" }} />
+        <div style={rowStyle}>
+          <Typography.Text strong style={{ fontSize: 16 }}>
+            Grand total
           </Typography.Text>
-        </Descriptions.Item>
-      </Descriptions>
+          <span style={{ ...numericStyle, fontSize: 16, fontWeight: 500 }}>
+            {formatMoney(t.grand_total)}
+          </span>
+        </div>
+      </Space>
     </Card>
   );
 }

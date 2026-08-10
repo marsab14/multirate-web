@@ -106,7 +106,7 @@ export default function DocumentsList() {
       key: "title",
       render: (v: string, row) => <Link to={`/documents/${row.id}`}>{v}</Link>,
     },
-    { title: "Customer", dataIndex: "customer_name", key: "customer" },
+    { title: "Customer", dataIndex: "customer", key: "customer" },
     {
       title: "Issue date",
       dataIndex: "issue_date",

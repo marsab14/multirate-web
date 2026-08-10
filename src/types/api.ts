@@ -1,14 +1,14 @@
-// Shared API types. Money values are strings to preserve exact decimal
-// precision across the wire; convert to Decimal (decimal.js) when computing
-// locally.
+// Shared API types. Money values are numbers here to align with AntD
+// InputNumber, which returns/consumes JS numbers with a configured precision.
+// The backend accepts either numeric JSON or decimal-string encoded values.
 
 export type UUID = string;
 export type ISODate = string; // YYYY-MM-DD
 export type ISODateTime = string; // RFC 3339
 export type MoneyString = string; // e.g. "1234.56"
 
-export type DocumentType = "invoice" | "quote";
 export type DocumentStatus = "draft" | "finalized";
+export type DiscountType = "%" | "fixed" | null;
 
 export interface SessionUser {
   id: string;
@@ -18,7 +18,7 @@ export interface SessionUser {
 export interface Session {
   access_token: string;
   refresh_token: string;
-  expires_at: number; // unix seconds
+  expires_at: number;
   user: SessionUser;
 }
 
@@ -29,6 +29,9 @@ export interface AuthResponse {
 export interface ApiError {
   code: string;
   message: string;
+  // The backend can point validation errors at a specific field path,
+  // e.g. "lines.2.discount_value".
+  field?: string;
   details?: Record<string, unknown>;
 }
 
@@ -37,56 +40,51 @@ export interface ApiErrorEnvelope {
 }
 
 export interface LineItem {
-  id: UUID;
-  document_id: UUID;
+  id?: UUID;
+  document_id?: UUID;
   description: string;
-  quantity: MoneyString;
-  unit_price: MoneyString;
-  tax_rate: MoneyString; // percentage, e.g. "18.00"
-  discount_rate: MoneyString; // percentage
-  position: number;
+  qty: number;
+  unit: number;
+  discount_type: DiscountType;
+  discount_value: number | null;
+  tax_pct: number;
+  position?: number;
 }
 
 export interface Document {
   id: UUID;
-  owner_id: UUID;
-  type: DocumentType;
+  owner_id?: UUID;
   status: DocumentStatus;
-  number: string;
   title: string;
-  customer_name: string;
-  customer_email: string | null;
+  customer: string;
   issue_date: ISODate;
-  due_date: ISODate | null;
-  currency: string; // ISO 4217, e.g. "INR", "USD"
-  notes: string | null;
-  // Populated by the list endpoint so the table can render totals without
-  // fetching each document individually.
-  grand_total?: MoneyString;
-  created_at: ISODateTime;
-  updated_at: ISODateTime;
-  line_items: LineItem[];
+  currency?: string;
+  grand_total?: MoneyString | number;
+  finalized_at?: ISODateTime | null;
+  created_at?: ISODateTime;
+  updated_at?: ISODateTime;
+  lines: LineItem[];
 }
 
 export interface DocumentListResponse {
   documents: Document[];
 }
 
-// Computed totals returned by calc.ts. Sum-of-rounded, not round-of-sum.
+// Computed totals returned by calc.ts (and by the server on demand).
 export interface LineItemTotals {
   subtotal: MoneyString;
-  discount_amount: MoneyString;
-  taxable_amount: MoneyString;
-  tax_amount: MoneyString;
+  discount: MoneyString;
+  taxable: MoneyString;
+  tax: MoneyString;
   total: MoneyString;
 }
 
 export interface DocumentTotals {
   subtotal: MoneyString;
-  discount_total: MoneyString;
-  tax_total: MoneyString;
+  total_discount: MoneyString;
+  total_tax: MoneyString;
   grand_total: MoneyString;
-  line_totals: LineItemTotals[];
+  lines: LineItemTotals[];
 }
 
 export interface Paginated<T> {

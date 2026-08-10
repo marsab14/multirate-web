@@ -95,11 +95,39 @@ both**. Same rules:
 
 - decimal.js, precision 12, HALF_UP rounding, money to 2 dp.
 - Percentages 0..100.
-- Per line: `subtotal = qty × unit_price`, discount off subtotal, tax off
-  taxable amount, total = taxable + tax.
+- Per line: `subtotal = qty × unit`. Discount is one of:
+  - `null` — no discount
+  - `%`   — `subtotal × value / 100`
+  - `fixed` — `value` (absolute amount)
+- `taxable = subtotal − discount`, then `tax = taxable × tax_pct / 100`,
+  then `total = taxable + tax`.
 - Document totals = sum of rounded line values (sum-of-rounded).
-- Errors: `CALC_INVALID_NUMBER`, `CALC_NEGATIVE_QUANTITY`,
-  `CALC_NEGATIVE_UNIT_PRICE`, `CALC_RATE_OUT_OF_RANGE`.
+- Errors: `INVALID_NUMBER`, `NEGATIVE_QUANTITY`, `NEGATIVE_UNIT_PRICE`,
+  `RATE_OUT_OF_RANGE`, `DISCOUNT_EXCEEDS_SUBTOTAL`.
+
+## Line sync strategy (saving edits)
+
+When saving an existing document, the editor:
+
+1. `PATCH /api/documents/:id` with the metadata (`title`, `customer`,
+   `issue_date`).
+2. `DELETE /api/documents/:id/lines` — bulk delete all existing lines.
+3. `POST /api/documents/:id/lines` — bulk insert the current lines.
+
+This "wipe and re-insert" approach is deliberately simple. **Tradeoffs:**
+
+- Every save invalidates any external references to individual line IDs.
+  If you build integrations or webhooks that key off line IDs, they'll see
+  a fresh set of IDs after every draft save.
+- It's not atomic across the three requests. If the `POST` fails after the
+  `DELETE` succeeds, the document is left with zero lines. For a
+  take-home this is acceptable; for production, either wrap the operation
+  in a transactional endpoint (`PUT /api/documents/:id` that replaces the
+  whole document) or diff line IDs client-side and issue
+  `POST`/`PATCH`/`DELETE` per changed row.
+- The server should reject any of these writes on a finalized document
+  with `409 DOCUMENT_FINALIZED`; the editor surfaces that error and
+  invalidates its cached copy of the document.
 
 ## Deployment (Vercel)
 

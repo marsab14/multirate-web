@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  App,
   Button,
   Card,
   Col,
@@ -7,265 +8,410 @@ import {
   Form,
   Input,
   Row,
-  Select,
   Space,
+  Spin,
+  Tag,
   Typography,
-  message,
 } from "antd";
+import { ArrowLeftOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
+import axios, { type AxiosError } from "axios";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
-import LineItemsEditor, {
-  type EditableLineItem,
-} from "../components/LineItemsEditor";
+import { formatDate } from "../lib/format";
+import LineItemsEditor from "../components/LineItemsEditor";
 import TotalsPanel from "../components/TotalsPanel";
-import type { Document, DocumentStatus, DocumentType } from "../types/api";
+import StatusTag from "../components/StatusTag";
+import type {
+  ApiErrorEnvelope,
+  Document,
+  DocumentStatus,
+  LineItem,
+} from "../types/api";
 
-interface HeaderFormValues {
-  type: DocumentType;
+type LineFormValues = Pick<
+  LineItem,
+  | "description"
+  | "qty"
+  | "unit"
+  | "discount_type"
+  | "discount_value"
+  | "tax_pct"
+> & { id?: string };
+
+interface EditorFormValues {
+  title: string;
+  customer: string;
+  issue_date: string; // YYYY-MM-DD
   status: DocumentStatus;
-  number: string;
-  customer_name: string;
-  customer_email: string | null;
-  issue_date: Dayjs;
-  due_date: Dayjs | null;
-  currency: string;
-  notes: string | null;
+  lines: LineFormValues[];
 }
 
-async function fetchDocument(id: string): Promise<Document> {
-  const { data } = await api.get<Document>(`/api/documents/${id}`);
-  return data;
-}
+const NEW_INITIAL: EditorFormValues = {
+  title: "",
+  customer: "",
+  issue_date: dayjs().format("YYYY-MM-DD"),
+  status: "draft",
+  lines: [],
+};
 
-async function saveDocument(
-  id: string | undefined,
-  payload: Partial<Document>,
-): Promise<Document> {
-  if (id) {
-    const { data } = await api.put<Document>(`/api/documents/${id}`, payload);
-    return data;
-  }
-  const { data } = await api.post<Document>("/api/documents", payload);
-  return data;
-}
+const docToForm = (doc: Document): EditorFormValues => ({
+  title: doc.title,
+  customer: doc.customer,
+  issue_date: doc.issue_date,
+  status: doc.status,
+  lines: doc.lines.map((li) => ({
+    id: li.id,
+    description: li.description,
+    qty: li.qty,
+    unit: li.unit,
+    discount_type: li.discount_type,
+    discount_value: li.discount_value,
+    tax_pct: li.tax_pct,
+  })),
+});
+
+// Parse an API validation field path like "lines.2.discount_value" → 2.
+const parseLineIndex = (field: string | undefined): number | null => {
+  if (!field) return null;
+  const m = /^lines\.(\d+)(?:\.|$)/.exec(field);
+  return m ? Number(m[1]) : null;
+};
+
+const scrollToLine = (idx: number) => {
+  // Defer to next tick so the DOM has rendered the outline change first.
+  setTimeout(() => {
+    const el = document.querySelector<HTMLElement>(
+      `[data-line-index="${idx}"]`,
+    );
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, 0);
+};
 
 export default function DocumentEditor() {
   const { id } = useParams<{ id: string }>();
   const isNew = !id || id === "new";
   const navigate = useNavigate();
   const qc = useQueryClient();
-  const [form] = Form.useForm<HeaderFormValues>();
-  const [lines, setLines] = useState<EditableLineItem[]>([]);
-  const [currency, setCurrency] = useState("INR");
+  const { message, modal } = App.useApp();
+  const [form] = Form.useForm<EditorFormValues>();
+  const [isDirty, setIsDirty] = useState(false);
+  const [errorLineIndex, setErrorLineIndex] = useState<number | null>(null);
 
   const { data: doc, isLoading } = useQuery({
     queryKey: ["document", id],
-    queryFn: () => fetchDocument(id as string),
+    queryFn: async () => {
+      const { data } = await api.get<Document>(`/api/documents/${id}`);
+      return data;
+    },
     enabled: !isNew,
   });
 
   useEffect(() => {
     if (doc) {
-      form.setFieldsValue({
-        type: doc.type,
-        status: doc.status,
-        number: doc.number,
-        customer_name: doc.customer_name,
-        customer_email: doc.customer_email,
-        issue_date: dayjs(doc.issue_date),
-        due_date: doc.due_date ? dayjs(doc.due_date) : null,
-        currency: doc.currency,
-        notes: doc.notes,
-      });
-      setCurrency(doc.currency);
-      setLines(
-        doc.line_items.map((li) => ({
-          key: li.id,
-          id: li.id,
-          description: li.description,
-          quantity: li.quantity,
-          unit_price: li.unit_price,
-          tax_rate: li.tax_rate,
-          discount_rate: li.discount_rate,
-        })),
-      );
+      form.setFieldsValue(docToForm(doc));
+      setIsDirty(false);
+      setErrorLineIndex(null);
     }
   }, [doc, form]);
 
-  const initialValues = useMemo<Partial<HeaderFormValues>>(
-    () => ({
-      type: "invoice",
-      status: "draft",
-      currency: "INR",
-      issue_date: dayjs(),
-    }),
-    [],
-  );
+  const status =
+    (Form.useWatch("status", form) as DocumentStatus | undefined) ??
+    doc?.status ??
+    "draft";
+  const title = Form.useWatch("title", form) as string | undefined;
+  const customer = Form.useWatch("customer", form) as string | undefined;
+  const issueDate = Form.useWatch("issue_date", form) as string | undefined;
+  const lines =
+    (Form.useWatch("lines", form) as LineFormValues[] | undefined) ?? [];
 
-  const save = useMutation({
-    mutationFn: async (values: HeaderFormValues) => {
-      const payload: Partial<Document> = {
-        type: values.type,
-        status: values.status,
-        number: values.number,
-        customer_name: values.customer_name,
-        customer_email: values.customer_email,
-        issue_date: values.issue_date.format("YYYY-MM-DD"),
-        due_date: values.due_date ? values.due_date.format("YYYY-MM-DD") : null,
-        currency: values.currency,
-        notes: values.notes,
-        line_items: lines.map((li, idx) => ({
-          id: li.id ?? "",
-          document_id: id ?? "",
-          description: li.description,
-          quantity: li.quantity,
-          unit_price: li.unit_price,
-          tax_rate: li.tax_rate,
-          discount_rate: li.discount_rate,
-          position: idx,
-        })),
-      };
-      return saveDocument(isNew ? undefined : id, payload);
+  const finalized = status === "finalized";
+
+  const handleApiError = (err: unknown, context: "save" | "finalize") => {
+    if (!axios.isAxiosError(err)) {
+      message.error(`${context === "save" ? "Save" : "Finalize"} failed`);
+      return;
+    }
+    const ax = err as AxiosError<ApiErrorEnvelope>;
+    const status = ax.response?.status;
+    const code = ax.response?.data?.error?.code;
+    const apiField = ax.response?.data?.error?.field;
+    const apiMsg = ax.response?.data?.error?.message;
+
+    if (status === 409 && code === "DOCUMENT_FINALIZED") {
+      message.error("This document was finalized elsewhere.");
+      if (!isNew) qc.invalidateQueries({ queryKey: ["document", id] });
+      return;
+    }
+
+    const lineIdx = parseLineIndex(apiField);
+    if (code === "DISCOUNT_EXCEEDS_SUBTOTAL") {
+      if (lineIdx !== null) {
+        setErrorLineIndex(lineIdx);
+        scrollToLine(lineIdx);
+        form.setFields([
+          {
+            name: ["lines", lineIdx, "discount_value"],
+            errors: [apiMsg ?? "Discount exceeds line subtotal"],
+          },
+        ]);
+        message.error(
+          `Line ${lineIdx + 1}: ${apiMsg ?? "Discount exceeds subtotal"}`,
+        );
+      } else {
+        message.error(apiMsg ?? "Discount exceeds subtotal");
+      }
+      return;
+    }
+
+    if (status === 400 && code === "VALIDATION_ERROR" && apiField) {
+      if (lineIdx !== null) {
+        setErrorLineIndex(lineIdx);
+        scrollToLine(lineIdx);
+        const parts = apiField.split(".");
+        if (parts[0] === "lines" && parts.length >= 3) {
+          const key = parts[2] as keyof LineFormValues;
+          form.setFields([
+            {
+              name: ["lines", Number(parts[1]), key],
+              errors: [apiMsg ?? "Invalid value"],
+            },
+          ]);
+        }
+      }
+      message.error(apiMsg ?? "Please fix the highlighted fields");
+      return;
+    }
+
+    message.error(
+      apiMsg ?? (context === "save" ? "Save failed" : "Finalize failed"),
+    );
+  };
+
+  const saveDraft = useMutation({
+    mutationFn: async (values: EditorFormValues) => {
+      if (isNew) {
+        const { data } = await api.post<Document>("/api/documents", {
+          title: values.title,
+          customer: values.customer,
+          issue_date: values.issue_date,
+          status: "draft",
+          lines: values.lines,
+        });
+        return data;
+      }
+      // For existing docs: PATCH metadata, then replace lines wholesale.
+      // See README ("Line sync strategy") for the tradeoff — we lose per-line
+      // id continuity but the code stays trivially simple.
+      await api.patch(`/api/documents/${id}`, {
+        title: values.title,
+        customer: values.customer,
+        issue_date: values.issue_date,
+      });
+      await api.delete(`/api/documents/${id}/lines`);
+      await api.post(`/api/documents/${id}/lines`, { lines: values.lines });
+      const { data } = await api.get<Document>(`/api/documents/${id}`);
+      return data;
     },
     onSuccess: (saved) => {
-      message.success("Saved");
+      form.setFieldsValue(docToForm(saved));
+      setIsDirty(false);
+      setErrorLineIndex(null);
       qc.invalidateQueries({ queryKey: ["documents"] });
       qc.invalidateQueries({ queryKey: ["document", saved.id] });
+      message.success("Saved");
       if (isNew) navigate(`/documents/${saved.id}`, { replace: true });
     },
-    onError: (err) => {
-      message.error(err instanceof Error ? err.message : "Failed to save");
-    },
+    onError: (err) => handleApiError(err, "save"),
   });
+
+  const finalize = useMutation({
+    mutationFn: async () => {
+      const { data } = await api.post<Document>(
+        `/api/documents/${id}/finalize`,
+      );
+      return data;
+    },
+    onSuccess: (saved) => {
+      form.setFieldsValue(docToForm(saved));
+      setIsDirty(false);
+      setErrorLineIndex(null);
+      qc.invalidateQueries({ queryKey: ["documents"] });
+      qc.invalidateQueries({ queryKey: ["document", saved.id] });
+      message.success("Finalized");
+    },
+    onError: (err) => handleApiError(err, "finalize"),
+  });
+
+  const onFinalizeClick = () => {
+    modal.confirm({
+      title: "Finalize this document?",
+      content: "Once finalized, this document can't be edited. Continue?",
+      okText: "Finalize",
+      cancelText: "Cancel",
+      onOk: () => finalize.mutateAsync(),
+    });
+  };
+
+  const linesForTotals = useMemo(
+    () =>
+      lines.map((l) => ({
+        qty: l?.qty ?? 0,
+        unit: l?.unit ?? 0,
+        discount_type: l?.discount_type ?? null,
+        discount_value: l?.discount_value ?? null,
+        tax_pct: l?.tax_pct ?? 0,
+      })),
+    [lines],
+  );
+
+  if (!isNew && isLoading) {
+    return (
+      <div
+        style={{
+          minHeight: 240,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Spin size="large" />
+      </div>
+    );
+  }
 
   return (
     <div>
-      <div style={{ marginBottom: 16 }}>
-        <Typography.Title level={3} style={{ margin: 0 }}>
-          {isNew ? "New document" : `Document ${doc?.number ?? ""}`}
-        </Typography.Title>
+      <div style={{ marginBottom: 8 }}>
+        <Button
+          type="text"
+          icon={<ArrowLeftOutlined />}
+          onClick={() => navigate("/documents")}
+        >
+          Back to documents
+        </Button>
       </div>
-      <Row gutter={16}>
-        <Col xs={24} lg={16}>
-          <Card loading={!isNew && isLoading} title="Details">
-            <Form<HeaderFormValues>
-              form={form}
-              layout="vertical"
-              initialValues={initialValues}
-              onValuesChange={(_, all) => {
-                if (all.currency) setCurrency(all.currency);
-              }}
-              onFinish={(v) => save.mutate(v)}
-            >
-              <Row gutter={12}>
-                <Col span={8}>
-                  <Form.Item name="type" label="Type" rules={[{ required: true }]}>
-                    <Select
-                      options={[
-                        { value: "invoice", label: "Invoice" },
-                        { value: "quote", label: "Quote" },
-                      ]}
-                    />
-                  </Form.Item>
-                </Col>
-                <Col span={8}>
-                  <Form.Item
-                    name="status"
-                    label="Status"
-                    rules={[{ required: true }]}
-                  >
-                    <Select
-                      options={[
-                        { value: "draft", label: "Draft" },
-                        { value: "finalized", label: "Finalized" },
-                      ]}
-                    />
-                  </Form.Item>
-                </Col>
-                <Col span={8}>
-                  <Form.Item
-                    name="number"
-                    label="Number"
-                    rules={[{ required: true }]}
-                  >
-                    <Input placeholder="INV-0001" />
-                  </Form.Item>
-                </Col>
-              </Row>
-              <Row gutter={12}>
-                <Col span={12}>
-                  <Form.Item
-                    name="customer_name"
-                    label="Customer"
-                    rules={[{ required: true }]}
-                  >
-                    <Input />
-                  </Form.Item>
-                </Col>
-                <Col span={12}>
-                  <Form.Item
-                    name="customer_email"
-                    label="Customer email"
-                    rules={[{ type: "email" }]}
-                  >
-                    <Input />
-                  </Form.Item>
-                </Col>
-              </Row>
-              <Row gutter={12}>
-                <Col span={8}>
-                  <Form.Item
-                    name="issue_date"
-                    label="Issue date"
-                    rules={[{ required: true }]}
-                  >
-                    <DatePicker style={{ width: "100%" }} />
-                  </Form.Item>
-                </Col>
-                <Col span={8}>
-                  <Form.Item name="due_date" label="Due date">
-                    <DatePicker style={{ width: "100%" }} />
-                  </Form.Item>
-                </Col>
-                <Col span={8}>
-                  <Form.Item name="currency" label="Currency">
-                    <Select
-                      options={[
-                        { value: "INR", label: "INR" },
-                        { value: "USD", label: "USD" },
-                        { value: "EUR", label: "EUR" },
-                        { value: "GBP", label: "GBP" },
-                      ]}
-                    />
-                  </Form.Item>
-                </Col>
-              </Row>
-              <Form.Item name="notes" label="Notes">
-                <Input.TextArea rows={3} />
-              </Form.Item>
 
-              <Typography.Title level={5}>Line items</Typography.Title>
-              <LineItemsEditor value={lines} onChange={setLines} />
-
-              <Space style={{ marginTop: 16 }}>
+      <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
+        <Col flex="1 1 auto" style={{ minWidth: 0 }}>
+          <Typography.Title
+            level={3}
+            style={{ margin: 0 }}
+            editable={
+              finalized
+                ? false
+                : {
+                    tooltip: "Edit title",
+                    onChange: (v: string) => {
+                      form.setFieldValue("title", v);
+                      setIsDirty(true);
+                    },
+                  }
+            }
+          >
+            {title || "Untitled document"}
+          </Typography.Title>
+          <Space size="small" style={{ marginTop: 4 }}>
+            <Typography.Text type="secondary">
+              {customer || "No customer"}
+            </Typography.Text>
+            {issueDate ? <Tag>{formatDate(issueDate)}</Tag> : null}
+          </Space>
+        </Col>
+        <Col>
+          <Space>
+            <StatusTag status={status} />
+            {finalized ? (
+              <Typography.Text type="secondary">
+                Finalized on {formatDate(doc?.finalized_at)}
+              </Typography.Text>
+            ) : (
+              <>
+                <Button
+                  onClick={() => saveDraft.mutate(form.getFieldsValue(true))}
+                  loading={saveDraft.isPending}
+                >
+                  Save draft
+                </Button>
                 <Button
                   type="primary"
-                  htmlType="submit"
-                  loading={save.isPending}
+                  disabled={isDirty || saveDraft.isPending}
+                  loading={finalize.isPending}
+                  onClick={onFinalizeClick}
+                  title={isDirty ? "Save your changes first" : undefined}
                 >
-                  Save
+                  Finalize
                 </Button>
-                <Button onClick={() => navigate("/documents")}>Cancel</Button>
-              </Space>
-            </Form>
-          </Card>
-        </Col>
-        <Col xs={24} lg={8}>
-          <TotalsPanel lines={lines} currency={currency} />
+              </>
+            )}
+          </Space>
         </Col>
       </Row>
+
+      <Card>
+        <Form<EditorFormValues>
+          form={form}
+          layout="vertical"
+          disabled={finalized}
+          initialValues={isNew ? NEW_INITIAL : undefined}
+          onValuesChange={() => {
+            setIsDirty(true);
+            if (errorLineIndex !== null) setErrorLineIndex(null);
+          }}
+        >
+          <Row gutter={16}>
+            <Col span={8}>
+              <Form.Item
+                name="title"
+                label="Title"
+                rules={[{ required: true, message: "Title is required" }]}
+              >
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item
+                name="customer"
+                label="Customer"
+                rules={[{ required: true, message: "Customer is required" }]}
+              >
+                <Input />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item
+                name="issue_date"
+                label="Issue date"
+                rules={[{ required: true, message: "Issue date is required" }]}
+                getValueProps={(v?: string) => ({
+                  value: v ? dayjs(v) : null,
+                })}
+                normalize={(v: Dayjs | null) =>
+                  v ? v.format("YYYY-MM-DD") : null
+                }
+              >
+                <DatePicker style={{ width: "100%" }} />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Typography.Title level={5} style={{ marginTop: 8 }}>
+            Line items
+          </Typography.Title>
+
+          <LineItemsEditor
+            disabled={finalized}
+            errorIndex={errorLineIndex}
+          />
+
+          <Row justify="end" style={{ marginTop: 24 }}>
+            <Col>
+              <TotalsPanel lines={linesForTotals} />
+            </Col>
+          </Row>
+        </Form>
+      </Card>
     </div>
   );
 }

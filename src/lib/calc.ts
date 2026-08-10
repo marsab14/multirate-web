@@ -2,21 +2,27 @@
 // policy changes, update both.
 //
 // Rules (must match billing-api/app/services/calc.py):
-//   - All money math uses decimal.js with a working precision of 12 significant
-//     digits; final money values are rounded HALF_UP to 2 decimal places.
-//   - Percentages (tax_rate, discount_rate) are expressed 0..100 (not 0..1).
+//   - All money math uses decimal.js precision 12, HALF_UP rounding.
+//   - Final money values rounded to 2 decimal places.
 //   - Per line:
-//       subtotal        = quantity * unit_price
-//       discount_amount = subtotal * discount_rate / 100
-//       taxable_amount  = subtotal - discount_amount
-//       tax_amount      = taxable_amount * tax_rate / 100
-//       total           = taxable_amount + tax_amount
-//   - Document totals are the sum of the corresponding rounded line values
-//     (sum-of-rounded, not round-of-sum, to match printed invoices).
-//   - Inputs are validated; CalcError is thrown with a stable `code`.
+//       subtotal        = qty * unit
+//       discount:
+//         null          → 0
+//         '%'           → subtotal * discount_value / 100
+//         'fixed'       → discount_value
+//       (discount must be <= subtotal, else DISCOUNT_EXCEEDS_SUBTOTAL)
+//       taxable         = subtotal - discount
+//       tax             = taxable * tax_pct / 100
+//       total           = taxable + tax
+//   - Document totals are the sum of the rounded line values (sum-of-rounded,
+//     to match how invoices are printed).
+//   - Stable error codes (mirrored from the backend):
+//       INVALID_NUMBER, NEGATIVE_QUANTITY, NEGATIVE_UNIT_PRICE,
+//       RATE_OUT_OF_RANGE, DISCOUNT_EXCEEDS_SUBTOTAL
 
 import { Decimal } from "decimal.js";
 import type {
+  DiscountType,
   DocumentTotals,
   LineItem,
   LineItemTotals,
@@ -29,12 +35,12 @@ const MONEY_DP = 2;
 const HUNDRED = new Decimal(100);
 const ZERO = new Decimal(0);
 
-// Stable error codes shared with billing-api. Keep in sync.
 export const CALC_ERROR_CODES = {
-  INVALID_NUMBER: "CALC_INVALID_NUMBER",
-  NEGATIVE_QUANTITY: "CALC_NEGATIVE_QUANTITY",
-  NEGATIVE_UNIT_PRICE: "CALC_NEGATIVE_UNIT_PRICE",
-  RATE_OUT_OF_RANGE: "CALC_RATE_OUT_OF_RANGE",
+  INVALID_NUMBER: "INVALID_NUMBER",
+  NEGATIVE_QUANTITY: "NEGATIVE_QUANTITY",
+  NEGATIVE_UNIT_PRICE: "NEGATIVE_UNIT_PRICE",
+  RATE_OUT_OF_RANGE: "RATE_OUT_OF_RANGE",
+  DISCOUNT_EXCEEDS_SUBTOTAL: "DISCOUNT_EXCEEDS_SUBTOTAL",
 } as const;
 
 export type CalcErrorCode =
@@ -51,7 +57,11 @@ export class CalcError extends Error {
   }
 }
 
-function toDecimal(value: MoneyString | number, field: string): Decimal {
+function toDecimal(
+  value: number | string | null | undefined,
+  field: string,
+): Decimal {
+  if (value === null || value === undefined || value === "") return ZERO;
   try {
     const d = new Decimal(value);
     if (!d.isFinite()) {
@@ -67,7 +77,7 @@ function toDecimal(value: MoneyString | number, field: string): Decimal {
     throw new CalcError(
       CALC_ERROR_CODES.INVALID_NUMBER,
       field,
-      `${field} is not a valid number: ${value}`,
+      `${field} is not a valid number: ${String(value)}`,
     );
   }
 }
@@ -76,85 +86,115 @@ function money(d: Decimal): MoneyString {
   return d.toDecimalPlaces(MONEY_DP, Decimal.ROUND_HALF_UP).toFixed(MONEY_DP);
 }
 
-export function computeLine(item: {
-  quantity: MoneyString | number;
-  unit_price: MoneyString | number;
-  tax_rate: MoneyString | number;
-  discount_rate: MoneyString | number;
-}): LineItemTotals {
-  const quantity = toDecimal(item.quantity, "quantity");
-  const unit_price = toDecimal(item.unit_price, "unit_price");
-  const tax_rate = toDecimal(item.tax_rate, "tax_rate");
-  const discount_rate = toDecimal(item.discount_rate, "discount_rate");
+export interface LineComputeInput {
+  qty: number | string | null | undefined;
+  unit: number | string | null | undefined;
+  discount_type: DiscountType;
+  discount_value: number | string | null | undefined;
+  tax_pct: number | string | null | undefined;
+}
 
-  if (quantity.lt(0)) {
+export function computeLine(item: LineComputeInput): LineItemTotals {
+  const qty = toDecimal(item.qty, "qty");
+  const unit = toDecimal(item.unit, "unit");
+  const tax_pct = toDecimal(item.tax_pct, "tax_pct");
+
+  if (qty.lt(0)) {
     throw new CalcError(
       CALC_ERROR_CODES.NEGATIVE_QUANTITY,
-      "quantity",
-      "quantity must be >= 0",
+      "qty",
+      "qty must be >= 0",
     );
   }
-  if (unit_price.lt(0)) {
+  if (unit.lt(0)) {
     throw new CalcError(
       CALC_ERROR_CODES.NEGATIVE_UNIT_PRICE,
-      "unit_price",
-      "unit_price must be >= 0",
+      "unit",
+      "unit must be >= 0",
     );
   }
-  if (tax_rate.lt(0) || tax_rate.gt(HUNDRED)) {
+  if (tax_pct.lt(0) || tax_pct.gt(HUNDRED)) {
     throw new CalcError(
       CALC_ERROR_CODES.RATE_OUT_OF_RANGE,
-      "tax_rate",
-      "tax_rate must be between 0 and 100",
-    );
-  }
-  if (discount_rate.lt(0) || discount_rate.gt(HUNDRED)) {
-    throw new CalcError(
-      CALC_ERROR_CODES.RATE_OUT_OF_RANGE,
-      "discount_rate",
-      "discount_rate must be between 0 and 100",
+      "tax_pct",
+      "tax_pct must be between 0 and 100",
     );
   }
 
-  const subtotal = quantity.mul(unit_price);
-  const discount_amount = subtotal.mul(discount_rate).div(HUNDRED);
-  const taxable_amount = subtotal.sub(discount_amount);
-  const tax_amount = taxable_amount.mul(tax_rate).div(HUNDRED);
-  const total = taxable_amount.add(tax_amount);
+  const subtotal = qty.mul(unit);
+
+  let discount: Decimal;
+  if (item.discount_type === "%") {
+    const pct = toDecimal(item.discount_value, "discount_value");
+    if (pct.lt(0) || pct.gt(HUNDRED)) {
+      throw new CalcError(
+        CALC_ERROR_CODES.RATE_OUT_OF_RANGE,
+        "discount_value",
+        "percentage discount must be between 0 and 100",
+      );
+    }
+    discount = subtotal.mul(pct).div(HUNDRED);
+  } else if (item.discount_type === "fixed") {
+    discount = toDecimal(item.discount_value, "discount_value");
+    if (discount.lt(0)) {
+      throw new CalcError(
+        CALC_ERROR_CODES.RATE_OUT_OF_RANGE,
+        "discount_value",
+        "fixed discount must be >= 0",
+      );
+    }
+  } else {
+    discount = ZERO;
+  }
+
+  if (discount.gt(subtotal)) {
+    throw new CalcError(
+      CALC_ERROR_CODES.DISCOUNT_EXCEEDS_SUBTOTAL,
+      "discount_value",
+      "discount cannot exceed line subtotal",
+    );
+  }
+
+  const taxable = subtotal.sub(discount);
+  const tax = taxable.mul(tax_pct).div(HUNDRED);
+  const total = taxable.add(tax);
 
   return {
     subtotal: money(subtotal),
-    discount_amount: money(discount_amount),
-    taxable_amount: money(taxable_amount),
-    tax_amount: money(tax_amount),
+    discount: money(discount),
+    taxable: money(taxable),
+    tax: money(tax),
     total: money(total),
   };
 }
 
 export function computeDocument(
   lines: Array<
-    Pick<LineItem, "quantity" | "unit_price" | "tax_rate" | "discount_rate">
+    Pick<
+      LineItem,
+      "qty" | "unit" | "discount_type" | "discount_value" | "tax_pct"
+    >
   >,
 ): DocumentTotals {
   const line_totals = lines.map(computeLine);
 
   let subtotal = ZERO;
-  let discount_total = ZERO;
-  let tax_total = ZERO;
+  let total_discount = ZERO;
+  let total_tax = ZERO;
   let grand_total = ZERO;
 
   for (const lt of line_totals) {
     subtotal = subtotal.add(new Decimal(lt.subtotal));
-    discount_total = discount_total.add(new Decimal(lt.discount_amount));
-    tax_total = tax_total.add(new Decimal(lt.tax_amount));
+    total_discount = total_discount.add(new Decimal(lt.discount));
+    total_tax = total_tax.add(new Decimal(lt.tax));
     grand_total = grand_total.add(new Decimal(lt.total));
   }
 
   return {
     subtotal: money(subtotal),
-    discount_total: money(discount_total),
-    tax_total: money(tax_total),
+    total_discount: money(total_discount),
+    total_tax: money(total_tax),
     grand_total: money(grand_total),
-    line_totals,
+    lines: line_totals,
   };
 }

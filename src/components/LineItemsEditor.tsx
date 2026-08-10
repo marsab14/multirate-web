@@ -1,160 +1,274 @@
-import { Button, Input, InputNumber, Table } from "antd";
+import { useMemo } from "react";
+import {
+  Button,
+  Col,
+  Form,
+  Input,
+  InputNumber,
+  Row,
+  Select,
+  Space,
+  Typography,
+} from "antd";
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
-import type { LineItem, MoneyString } from "../types/api";
-
-export type EditableLineItem = Pick<
-  LineItem,
-  "description" | "quantity" | "unit_price" | "tax_rate" | "discount_rate"
-> & { id?: string; key: string };
+import { CalcError, computeLine } from "../lib/calc";
+import { formatMoney } from "../lib/format";
+import type { DiscountType, LineItem } from "../types/api";
 
 interface Props {
-  value: EditableLineItem[];
-  onChange: (next: EditableLineItem[]) => void;
   disabled?: boolean;
+  errorIndex?: number | null;
 }
 
-function toMoneyString(n: number | null): MoneyString {
-  if (n === null || n === undefined || Number.isNaN(n)) return "0";
-  return String(n);
+type LineFormValues = Pick<
+  LineItem,
+  | "description"
+  | "qty"
+  | "unit"
+  | "discount_type"
+  | "discount_value"
+  | "tax_pct"
+> & { id?: string };
+
+const NEW_LINE: LineFormValues = {
+  description: "",
+  qty: 1,
+  unit: 0,
+  discount_type: null,
+  discount_value: null,
+  tax_pct: 0,
+};
+
+const numericStyle: React.CSSProperties = {
+  fontVariantNumeric: "tabular-nums",
+};
+
+const HEADER: Array<{ label: string; width?: number | string; align?: "right" }> = [
+  { label: "Description", width: "1 1 200px" },
+  { label: "Qty", width: 70 },
+  { label: "Unit", width: 100 },
+  { label: "Discount", width: 90 },
+  { label: "Value", width: 90 },
+  { label: "Tax %", width: 80 },
+  { label: "Total", width: 100, align: "right" },
+  { label: "", width: 40 },
+];
+
+// Column widths as flex bases. Keep in sync with the input row cols below.
+const colProps = (i: number) => {
+  const w = HEADER[i].width;
+  if (typeof w === "number") return { style: { width: w, flex: `0 0 ${w}px` } };
+  return { flex: w };
+};
+
+interface RowProps {
+  field: { name: number; key: number };
+  remove: (index: number) => void;
+  disabled?: boolean;
+  hasError: boolean;
 }
 
-export default function LineItemsEditor({ value, onChange, disabled }: Props) {
-  const update = (key: string, patch: Partial<EditableLineItem>) => {
-    onChange(value.map((row) => (row.key === key ? { ...row, ...patch } : row)));
-  };
+function LineRow({ field, remove, disabled, hasError }: RowProps) {
+  const form = Form.useFormInstance();
+  const line = Form.useWatch(["lines", field.name], form) as
+    | LineFormValues
+    | undefined;
 
-  const remove = (key: string) => {
-    onChange(value.filter((row) => row.key !== key));
-  };
+  const total = useMemo(() => {
+    if (!line) return "0.00";
+    try {
+      return computeLine(line).total;
+    } catch (err) {
+      return err instanceof CalcError ? "—" : "—";
+    }
+  }, [line]);
 
-  const add = () => {
-    onChange([
-      ...value,
-      {
-        key: `new-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        description: "",
-        quantity: "1",
-        unit_price: "0",
-        tax_rate: "0",
-        discount_rate: "0",
-      },
-    ]);
-  };
+  const discountType: DiscountType = line?.discount_type ?? null;
+  const valueDisabled = disabled || discountType === null;
 
   return (
-    <>
-      <Table<EditableLineItem>
-        dataSource={value}
-        pagination={false}
-        rowKey="key"
-        size="small"
-        columns={[
-          {
-            title: "Description",
-            dataIndex: "description",
-            render: (_, row) => (
-              <Input
-                value={row.description}
-                disabled={disabled}
-                placeholder="Item description"
-                onChange={(e) =>
-                  update(row.key, { description: e.target.value })
+    <div
+      data-line-index={field.name}
+      style={{
+        padding: 4,
+        borderRadius: 6,
+        outline: hasError ? "2px solid #ff4d4f" : "none",
+        outlineOffset: 2,
+        marginBottom: 4,
+      }}
+    >
+      <Row gutter={8} align="middle" wrap={false}>
+        <Col {...colProps(0)}>
+          <Form.Item
+            name={[field.name, "description"]}
+            rules={[{ required: true, message: "Required" }]}
+            style={{ marginBottom: 0 }}
+          >
+            <Input placeholder="Item description" disabled={disabled} />
+          </Form.Item>
+        </Col>
+        <Col {...colProps(1)}>
+          <Form.Item
+            name={[field.name, "qty"]}
+            rules={[{ required: true, message: "" }]}
+            style={{ marginBottom: 0 }}
+          >
+            <InputNumber
+              min={1}
+              precision={0}
+              disabled={disabled}
+              style={{ width: "100%" }}
+            />
+          </Form.Item>
+        </Col>
+        <Col {...colProps(2)}>
+          <Form.Item
+            name={[field.name, "unit"]}
+            rules={[{ required: true, message: "" }]}
+            style={{ marginBottom: 0 }}
+          >
+            <InputNumber
+              min={0}
+              precision={2}
+              step={0.01}
+              disabled={disabled}
+              style={{ width: "100%" }}
+            />
+          </Form.Item>
+        </Col>
+        <Col {...colProps(3)}>
+          <Form.Item
+            name={[field.name, "discount_type"]}
+            style={{ marginBottom: 0 }}
+          >
+            <Select<DiscountType>
+              disabled={disabled}
+              style={{ width: "100%" }}
+              options={[
+                { value: null, label: "—" },
+                { value: "%", label: "%" },
+                { value: "fixed", label: "fixed" },
+              ]}
+              onChange={(v) => {
+                // Clear the value when the user un-picks a discount type.
+                if (v === null) {
+                  form.setFieldValue(
+                    ["lines", field.name, "discount_value"],
+                    null,
+                  );
                 }
-              />
-            ),
-          },
-          {
-            title: "Qty",
-            dataIndex: "quantity",
-            width: 120,
-            render: (_, row) => (
-              <InputNumber
-                value={Number(row.quantity)}
-                min={0}
-                step={1}
-                disabled={disabled}
-                style={{ width: "100%" }}
-                onChange={(v) => update(row.key, { quantity: toMoneyString(v) })}
-              />
-            ),
-          },
-          {
-            title: "Unit price",
-            dataIndex: "unit_price",
-            width: 140,
-            render: (_, row) => (
-              <InputNumber
-                value={Number(row.unit_price)}
-                min={0}
-                step={0.01}
-                disabled={disabled}
-                style={{ width: "100%" }}
-                onChange={(v) =>
-                  update(row.key, { unit_price: toMoneyString(v) })
-                }
-              />
-            ),
-          },
-          {
-            title: "Discount %",
-            dataIndex: "discount_rate",
-            width: 120,
-            render: (_, row) => (
-              <InputNumber
-                value={Number(row.discount_rate)}
-                min={0}
-                max={100}
-                step={0.5}
-                disabled={disabled}
-                style={{ width: "100%" }}
-                onChange={(v) =>
-                  update(row.key, { discount_rate: toMoneyString(v) })
-                }
-              />
-            ),
-          },
-          {
-            title: "Tax %",
-            dataIndex: "tax_rate",
-            width: 120,
-            render: (_, row) => (
-              <InputNumber
-                value={Number(row.tax_rate)}
-                min={0}
-                max={100}
-                step={0.5}
-                disabled={disabled}
-                style={{ width: "100%" }}
-                onChange={(v) => update(row.key, { tax_rate: toMoneyString(v) })}
-              />
-            ),
-          },
-          {
-            title: "",
-            width: 60,
-            render: (_, row) => (
-              <Button
-                type="text"
-                icon={<DeleteOutlined />}
-                disabled={disabled}
-                onClick={() => remove(row.key)}
-                aria-label="Remove line"
-              />
-            ),
-          },
-        ]}
-      />
-      <div style={{ marginTop: 12 }}>
-        <Button
-          icon={<PlusOutlined />}
-          onClick={add}
-          disabled={disabled}
-          type="dashed"
-          block
-        >
-          Add line item
-        </Button>
-      </div>
-    </>
+              }}
+            />
+          </Form.Item>
+        </Col>
+        <Col {...colProps(4)}>
+          <Form.Item
+            name={[field.name, "discount_value"]}
+            style={{ marginBottom: 0 }}
+          >
+            <InputNumber
+              min={0}
+              precision={2}
+              disabled={valueDisabled}
+              style={{ width: "100%" }}
+            />
+          </Form.Item>
+        </Col>
+        <Col {...colProps(5)}>
+          <Form.Item
+            name={[field.name, "tax_pct"]}
+            style={{ marginBottom: 0 }}
+          >
+            <InputNumber
+              min={0}
+              max={100}
+              precision={2}
+              disabled={disabled}
+              style={{ width: "100%" }}
+            />
+          </Form.Item>
+        </Col>
+        <Col {...colProps(6)}>
+          <div style={{ textAlign: "right", ...numericStyle }}>
+            {formatMoney(total)}
+          </div>
+        </Col>
+        <Col {...colProps(7)}>
+          <Button
+            type="text"
+            icon={<DeleteOutlined />}
+            disabled={disabled}
+            aria-label="Remove line"
+            onClick={() => remove(field.name)}
+          />
+        </Col>
+      </Row>
+    </div>
+  );
+}
+
+export default function LineItemsEditor({ disabled, errorIndex }: Props) {
+  return (
+    <Form.List name="lines">
+      {(fields, { add, remove }) => (
+        <div>
+          {fields.length > 0 ? (
+            <Row
+              gutter={8}
+              align="middle"
+              wrap={false}
+              style={{
+                padding: "0 4px 8px",
+                color: "rgba(0,0,0,0.45)",
+                fontSize: 12,
+              }}
+            >
+              {HEADER.map((h, i) => (
+                <Col key={i} {...colProps(i)}>
+                  <div style={{ textAlign: h.align ?? "left" }}>{h.label}</div>
+                </Col>
+              ))}
+            </Row>
+          ) : null}
+
+          {fields.map((field) => (
+            <LineRow
+              key={field.key}
+              field={field}
+              remove={remove}
+              disabled={disabled}
+              hasError={errorIndex === field.name}
+            />
+          ))}
+
+          {fields.length === 0 ? (
+            <div
+              style={{
+                padding: "16px 0",
+                color: "rgba(0,0,0,0.45)",
+                textAlign: "center",
+              }}
+            >
+              <Space direction="vertical" size={4}>
+                <Typography.Text type="secondary">
+                  No line items yet.
+                </Typography.Text>
+              </Space>
+            </div>
+          ) : null}
+
+          <Button
+            type="dashed"
+            icon={<PlusOutlined />}
+            block
+            disabled={disabled}
+            onClick={() => add({ ...NEW_LINE })}
+            style={{ marginTop: 12 }}
+          >
+            Add line
+          </Button>
+        </div>
+      )}
+    </Form.List>
   );
 }
