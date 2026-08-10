@@ -34,7 +34,8 @@ export default function Reports() {
           <Card loading={isLoading}>
             <Statistic
               title="Invoiced"
-              value={data ? formatMoney(data.total_invoiced, data.currency) : "—"}
+              value={data ? formatMoney(data.total_invoiced) : "—"}
+              suffix={data?.currency}
             />
           </Card>
         </Col>
@@ -42,7 +43,8 @@ export default function Reports() {
           <Card loading={isLoading}>
             <Statistic
               title="Paid"
-              value={data ? formatMoney(data.total_paid, data.currency) : "—"}
+              value={data ? formatMoney(data.total_paid) : "—"}
+              suffix={data?.currency}
             />
           </Card>
         </Col>
@@ -50,9 +52,8 @@ export default function Reports() {
           <Card loading={isLoading}>
             <Statistic
               title="Outstanding"
-              value={
-                data ? formatMoney(data.total_outstanding, data.currency) : "—"
-              }
+              value={data ? formatMoney(data.total_outstanding) : "—"}
+              suffix={data?.currency}
             />
           </Card>
         </Col>

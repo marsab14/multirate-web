@@ -8,7 +8,7 @@ export type ISODateTime = string; // RFC 3339
 export type MoneyString = string; // e.g. "1234.56"
 
 export type DocumentType = "invoice" | "quote";
-export type DocumentStatus = "draft" | "sent" | "paid" | "void";
+export type DocumentStatus = "draft" | "finalized";
 
 export interface SessionUser {
   id: string;
@@ -53,15 +53,23 @@ export interface Document {
   type: DocumentType;
   status: DocumentStatus;
   number: string;
+  title: string;
   customer_name: string;
   customer_email: string | null;
   issue_date: ISODate;
   due_date: ISODate | null;
   currency: string; // ISO 4217, e.g. "INR", "USD"
   notes: string | null;
+  // Populated by the list endpoint so the table can render totals without
+  // fetching each document individually.
+  grand_total?: MoneyString;
   created_at: ISODateTime;
   updated_at: ISODateTime;
   line_items: LineItem[];
+}
+
+export interface DocumentListResponse {
+  documents: Document[];
 }
 
 // Computed totals returned by calc.ts. Sum-of-rounded, not round-of-sum.

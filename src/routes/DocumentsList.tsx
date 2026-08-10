@@ -1,90 +1,211 @@
-import { Button, Table, Typography } from "antd";
+import { useMemo } from "react";
+import {
+  Alert,
+  Button,
+  Col,
+  DatePicker,
+  Empty,
+  Row,
+  Select,
+  Table,
+  Typography,
+} from "antd";
+import type { ColumnsType } from "antd/es/table";
 import { PlusOutlined } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import dayjs, { type Dayjs } from "dayjs";
 import { api } from "../lib/api";
 import { formatDate, formatMoney } from "../lib/format";
 import StatusTag from "../components/StatusTag";
-import type { Document, Paginated } from "../types/api";
+import type {
+  Document,
+  DocumentListResponse,
+  DocumentStatus,
+} from "../types/api";
 
-async function fetchDocuments(): Promise<Paginated<Document>> {
-  const { data } = await api.get<Paginated<Document>>("/api/documents", {
-    params: { page: 1, page_size: 50 },
+type StatusFilter = "all" | DocumentStatus;
+
+const isStatusFilter = (v: string | null): v is StatusFilter =>
+  v === "all" || v === "draft" || v === "finalized";
+
+const fetchDocuments = async (
+  from?: string,
+  to?: string,
+): Promise<Document[]> => {
+  const { data } = await api.get<DocumentListResponse>("/api/documents", {
+    params: { from, to },
   });
-  return data;
-}
+  return data.documents;
+};
 
 export default function DocumentsList() {
   const navigate = useNavigate();
-  const { data, isLoading, isError, error } = useQuery({
-    queryKey: ["documents"],
-    queryFn: fetchDocuments,
+  const [params, setParams] = useSearchParams();
+
+  const from = params.get("from") ?? undefined;
+  const to = params.get("to") ?? undefined;
+  const statusParam = params.get("status");
+  const status: StatusFilter = isStatusFilter(statusParam) ? statusParam : "all";
+
+  const updateParams = (next: {
+    from?: string | null;
+    to?: string | null;
+    status?: StatusFilter | null;
+  }) => {
+    const merged = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(next)) {
+      if (v === null || v === undefined || v === "" || v === "all") {
+        merged.delete(k);
+      } else {
+        merged.set(k, v);
+      }
+    }
+    setParams(merged, { replace: true });
+  };
+
+  const {
+    data = [],
+    isLoading,
+    isError,
+    error,
+  } = useQuery({
+    queryKey: ["documents", from, to],
+    queryFn: () => fetchDocuments(from, to),
   });
+
+  const filtered = useMemo(
+    () => (status === "all" ? data : data.filter((d) => d.status === status)),
+    [data, status],
+  );
+
+  const rangeValue: [Dayjs | null, Dayjs | null] | null =
+    from || to ? [from ? dayjs(from) : null, to ? dayjs(to) : null] : null;
+
+  const onRangeChange = (
+    values: [Dayjs | null, Dayjs | null] | null,
+  ) => {
+    if (!values || (!values[0] && !values[1])) {
+      updateParams({ from: null, to: null });
+      return;
+    }
+    updateParams({
+      from: values[0]?.format("YYYY-MM-DD") ?? null,
+      to: values[1]?.format("YYYY-MM-DD") ?? null,
+    });
+  };
+
+  const numericCell: React.CSSProperties = {
+    fontVariantNumeric: "tabular-nums",
+  };
+
+  const columns: ColumnsType<Document> = [
+    {
+      title: "Title",
+      dataIndex: "title",
+      key: "title",
+      render: (v: string, row) => <Link to={`/documents/${row.id}`}>{v}</Link>,
+    },
+    { title: "Customer", dataIndex: "customer_name", key: "customer" },
+    {
+      title: "Issue date",
+      dataIndex: "issue_date",
+      key: "issue_date",
+      render: (v: string) => formatDate(v, "DD MMM YYYY"),
+    },
+    {
+      title: "Status",
+      dataIndex: "status",
+      key: "status",
+      render: (v: DocumentStatus) => <StatusTag status={v} />,
+    },
+    {
+      title: "Grand total",
+      dataIndex: "grand_total",
+      key: "grand_total",
+      align: "right",
+      render: (v: string | undefined) => (
+        <span style={numericCell}>{formatMoney(v ?? "0")}</span>
+      ),
+    },
+  ];
 
   return (
     <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: 16,
-        }}
+      <Typography.Title level={2} style={{ marginTop: 0 }}>
+        Documents
+      </Typography.Title>
+
+      <Row
+        gutter={[12, 12]}
+        align="middle"
+        style={{ marginBottom: 16 }}
+        wrap
       >
-        <Typography.Title level={3} style={{ margin: 0 }}>
-          Documents
-        </Typography.Title>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={() => navigate("/documents/new")}
-        >
-          New document
-        </Button>
-      </div>
+        <Col>
+          <DatePicker.RangePicker
+            value={rangeValue}
+            onChange={onRangeChange}
+            allowEmpty={[true, true]}
+            format="YYYY-MM-DD"
+          />
+        </Col>
+        <Col>
+          <Select<StatusFilter>
+            value={status}
+            style={{ width: 160 }}
+            onChange={(v) => updateParams({ status: v })}
+            options={[
+              { value: "all", label: "All" },
+              { value: "draft", label: "Draft" },
+              { value: "finalized", label: "Finalized" },
+            ]}
+          />
+        </Col>
+        <Col flex="auto" style={{ textAlign: "right" }}>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => navigate("/documents/new")}
+          >
+            New document
+          </Button>
+        </Col>
+      </Row>
+
       {isError ? (
-        <Typography.Text type="danger">
-          {error instanceof Error ? error.message : "Failed to load documents"}
-        </Typography.Text>
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={
+            error instanceof Error ? error.message : "Failed to load documents"
+          }
+        />
       ) : null}
-      <Table<Document>
-        rowKey="id"
-        loading={isLoading}
-        dataSource={data?.items ?? []}
-        pagination={{ pageSize: 20 }}
-        columns={[
-          {
-            title: "Number",
-            dataIndex: "number",
-            render: (v, row) => <Link to={`/documents/${row.id}`}>{v}</Link>,
-          },
-          { title: "Customer", dataIndex: "customer_name" },
-          {
-            title: "Type",
-            dataIndex: "type",
-            render: (v: string) => v.charAt(0).toUpperCase() + v.slice(1),
-          },
-          {
-            title: "Issue date",
-            dataIndex: "issue_date",
-            render: (v: string) => formatDate(v),
-          },
-          {
-            title: "Total",
-            key: "grand_total",
-            render: (_, row) => {
-              const grand =
-                (row as unknown as { grand_total?: string }).grand_total ?? "0";
-              return formatMoney(grand, row.currency);
-            },
-          },
-          {
-            title: "Status",
-            dataIndex: "status",
-            render: (v) => <StatusTag status={v} />,
-          },
-        ]}
-      />
+
+      {!isError && !isLoading && filtered.length === 0 ? (
+        <Empty
+          description="No documents yet"
+          style={{ padding: "48px 0" }}
+        >
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => navigate("/documents/new")}
+          >
+            Create your first document
+          </Button>
+        </Empty>
+      ) : (
+        <Table<Document>
+          rowKey="id"
+          loading={isLoading}
+          dataSource={filtered}
+          columns={columns}
+          pagination={{ defaultPageSize: 20, showSizeChanger: true }}
+        />
+      )}
     </div>
   );
 }

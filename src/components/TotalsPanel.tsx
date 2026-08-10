@@ -9,7 +9,7 @@ interface Props {
   currency?: string;
 }
 
-export default function TotalsPanel({ lines, currency = "INR" }: Props) {
+export default function TotalsPanel({ lines, currency }: Props) {
   const result = useMemo(() => {
     try {
       return { totals: computeDocument(lines), error: null as string | null };
@@ -33,22 +33,34 @@ export default function TotalsPanel({ lines, currency = "INR" }: Props) {
   }
 
   const t = result.totals!;
+  const suffix = currency ? ` ${currency}` : "";
+  const numeric: React.CSSProperties = { fontVariantNumeric: "tabular-nums" };
 
   return (
     <Card title="Totals" size="small">
       <Descriptions column={1} size="small">
         <Descriptions.Item label="Subtotal">
-          {formatMoney(t.subtotal, currency)}
+          <span style={numeric}>
+            {formatMoney(t.subtotal)}
+            {suffix}
+          </span>
         </Descriptions.Item>
         <Descriptions.Item label="Discount">
-          −{formatMoney(t.discount_total, currency)}
+          <span style={numeric}>
+            −{formatMoney(t.discount_total)}
+            {suffix}
+          </span>
         </Descriptions.Item>
         <Descriptions.Item label="Tax">
-          {formatMoney(t.tax_total, currency)}
+          <span style={numeric}>
+            {formatMoney(t.tax_total)}
+            {suffix}
+          </span>
         </Descriptions.Item>
         <Descriptions.Item label="Grand total">
-          <Typography.Text strong>
-            {formatMoney(t.grand_total, currency)}
+          <Typography.Text strong style={numeric}>
+            {formatMoney(t.grand_total)}
+            {suffix}
           </Typography.Text>
         </Descriptions.Item>
       </Descriptions>

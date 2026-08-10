@@ -179,9 +179,7 @@ export default function DocumentEditor() {
                     <Select
                       options={[
                         { value: "draft", label: "Draft" },
-                        { value: "sent", label: "Sent" },
-                        { value: "paid", label: "Paid" },
-                        { value: "void", label: "Void" },
+                        { value: "finalized", label: "Finalized" },
                       ]}
                     />
                   </Form.Item>
