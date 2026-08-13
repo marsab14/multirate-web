@@ -23,20 +23,20 @@ interface Props {
 type LineFormValues = Pick<
   LineItem,
   | "description"
-  | "qty"
-  | "unit"
+  | "quantity"
+  | "unit_price"
   | "discount_type"
   | "discount_value"
-  | "tax_pct"
+  | "tax_percent"
 > & { id?: string };
 
 const NEW_LINE: LineFormValues = {
   description: "",
-  qty: 1,
-  unit: 0,
+  quantity: 1,
+  unit_price: 0,
   discount_type: null,
   discount_value: null,
-  tax_pct: 0,
+  tax_percent: 0,
 };
 
 const numericStyle: React.CSSProperties = {
@@ -46,7 +46,7 @@ const numericStyle: React.CSSProperties = {
 const HEADER: Array<{ label: string; width?: number | string; align?: "right" }> = [
   { label: "Description", width: "1 1 200px" },
   { label: "Qty", width: 70 },
-  { label: "Unit", width: 100 },
+  { label: "Unit price", width: 100 },
   { label: "Discount", width: 90 },
   { label: "Value", width: 90 },
   { label: "Tax %", width: 80 },
@@ -109,7 +109,7 @@ function LineRow({ field, remove, disabled, hasError }: RowProps) {
         </Col>
         <Col {...colProps(1)}>
           <Form.Item
-            name={[field.name, "qty"]}
+            name={[field.name, "quantity"]}
             rules={[{ required: true, message: "" }]}
             style={{ marginBottom: 0 }}
           >
@@ -123,7 +123,7 @@ function LineRow({ field, remove, disabled, hasError }: RowProps) {
         </Col>
         <Col {...colProps(2)}>
           <Form.Item
-            name={[field.name, "unit"]}
+            name={[field.name, "unit_price"]}
             rules={[{ required: true, message: "" }]}
             style={{ marginBottom: 0 }}
           >
@@ -146,7 +146,7 @@ function LineRow({ field, remove, disabled, hasError }: RowProps) {
               style={{ width: "100%" }}
               options={[
                 { value: null, label: "—" },
-                { value: "%", label: "%" },
+                { value: "percent", label: "%" },
                 { value: "fixed", label: "fixed" },
               ]}
               onChange={(v) => {
@@ -176,7 +176,7 @@ function LineRow({ field, remove, disabled, hasError }: RowProps) {
         </Col>
         <Col {...colProps(5)}>
           <Form.Item
-            name={[field.name, "tax_pct"]}
+            name={[field.name, "tax_percent"]}
             style={{ marginBottom: 0 }}
           >
             <InputNumber

@@ -8,7 +8,7 @@ export type ISODateTime = string; // RFC 3339
 export type MoneyString = string; // e.g. "1234.56"
 
 export type DocumentStatus = "draft" | "finalized";
-export type DiscountType = "%" | "fixed" | null;
+export type DiscountType = "percent" | "fixed" | null;
 
 export interface SessionUser {
   id: string;
@@ -43,11 +43,11 @@ export interface LineItem {
   id?: UUID;
   document_id?: UUID;
   description: string;
-  qty: number;
-  unit: number;
+  quantity: number;
+  unit_price: number;
   discount_type: DiscountType;
   discount_value: number | null;
-  tax_pct: number;
+  tax_percent: number;
   position?: number;
 }
 

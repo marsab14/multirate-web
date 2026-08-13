@@ -17,6 +17,7 @@ import type {
 } from "../types/api";
 
 const DB_KEY = "billing.mock.db";
+const DB_VERSION = 3; // bumped when the line-item field shapes changed
 const DEMO_EMAIL = "demo@example.com";
 const DEMO_PASSWORD = "password";
 // 15 minutes — long enough to click around, short enough to exercise the
@@ -30,6 +31,7 @@ interface MockUser {
 }
 
 interface MockDb {
+  version: number;
   users: MockUser[];
   documents: Document[];
   // refresh_token → user_id
@@ -122,33 +124,33 @@ function seed(): MockDb {
         id: uid(),
         document_id: doc1Id,
         description: "Widget A",
-        qty: 2,
-        unit: 50,
+        quantity: 2,
+        unit_price: 50,
         discount_type: null,
         discount_value: null,
-        tax_pct: 10,
+        tax_percent: 10,
         position: 0,
       },
       {
         id: uid(),
         document_id: doc1Id,
         description: "Widget B",
-        qty: 3,
-        unit: 30,
-        discount_type: "%",
+        quantity: 3,
+        unit_price: 30,
+        discount_type: "percent",
         discount_value: 10,
-        tax_pct: 10,
+        tax_percent: 10,
         position: 1,
       },
       {
         id: uid(),
         document_id: doc1Id,
         description: "Service fee",
-        qty: 1,
-        unit: 250,
+        quantity: 1,
+        unit_price: 250,
         discount_type: "fixed",
         discount_value: 25,
-        tax_pct: 10,
+        tax_percent: 10,
         position: 2,
       },
     ],
@@ -170,11 +172,11 @@ function seed(): MockDb {
         id: uid(),
         document_id: doc2Id,
         description: "Consulting hours",
-        qty: 40,
-        unit: 100,
+        quantity: 40,
+        unit_price: 100,
         discount_type: null,
         discount_value: null,
-        tax_pct: 5,
+        tax_percent: 5,
         position: 0,
       },
     ],
@@ -196,17 +198,18 @@ function seed(): MockDb {
         id: uid(),
         document_id: doc3Id,
         description: "Logo redesign",
-        qty: 1,
-        unit: 800,
-        discount_type: "%",
+        quantity: 1,
+        unit_price: 800,
+        discount_type: "percent",
         discount_value: 12.5,
-        tax_pct: 5,
+        tax_percent: 5,
         position: 0,
       },
     ],
   };
 
   return {
+    version: DB_VERSION,
     users: [{ id: userId, email: DEMO_EMAIL, password: DEMO_PASSWORD }],
     documents: [doc1, doc2, doc3],
     refresh_tokens: {},
@@ -217,8 +220,13 @@ function loadDb(): MockDb {
   try {
     const raw = localStorage.getItem(DB_KEY);
     if (!raw) throw new Error("empty");
-    return JSON.parse(raw) as MockDb;
+    const parsed = JSON.parse(raw) as MockDb;
+    if (parsed?.version !== DB_VERSION) throw new Error("stale");
+    return parsed;
   } catch {
+    // Version mismatch or corrupted data: wipe the session too, since any
+    // active login's user_id belongs to the previous seed generation.
+    localStorage.removeItem("billing.session");
     const fresh = seed();
     saveDb(fresh);
     return fresh;
@@ -300,14 +308,14 @@ function normalizeIncomingLine(
     id: uid(),
     document_id: documentId,
     description: String(li.description ?? ""),
-    qty: Number(li.qty ?? 0),
-    unit: Number(li.unit ?? 0),
+    quantity: Number(li.quantity ?? 0),
+    unit_price: Number(li.unit_price ?? 0),
     discount_type: li.discount_type ?? null,
     discount_value:
       li.discount_value === null || li.discount_value === undefined
         ? null
         : Number(li.discount_value),
-    tax_pct: Number(li.tax_pct ?? 0),
+    tax_percent: Number(li.tax_percent ?? 0),
     position: idx,
   };
 }

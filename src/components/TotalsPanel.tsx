@@ -6,7 +6,11 @@ import type { LineItem } from "../types/api";
 
 type ComputeLine = Pick<
   LineItem,
-  "qty" | "unit" | "discount_type" | "discount_value" | "tax_pct"
+  | "quantity"
+  | "unit_price"
+  | "discount_type"
+  | "discount_value"
+  | "tax_percent"
 >;
 
 interface Props {

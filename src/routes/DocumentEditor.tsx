@@ -33,11 +33,11 @@ import type {
 type LineFormValues = Pick<
   LineItem,
   | "description"
-  | "qty"
-  | "unit"
+  | "quantity"
+  | "unit_price"
   | "discount_type"
   | "discount_value"
-  | "tax_pct"
+  | "tax_percent"
 > & { id?: string };
 
 interface EditorFormValues {
@@ -61,16 +61,76 @@ const docToForm = (doc: Document): EditorFormValues => ({
   customer: doc.customer,
   issue_date: doc.issue_date,
   status: doc.status,
-  lines: doc.lines.map((li) => ({
+  // Defensive: server may omit `lines` when the document has none.
+  lines: (doc.lines ?? []).map((li) => ({
     id: li.id,
     description: li.description,
-    qty: li.qty,
-    unit: li.unit,
+    quantity: li.quantity,
+    unit_price: li.unit_price,
     discount_type: li.discount_type,
     discount_value: li.discount_value,
-    tax_pct: li.tax_pct,
+    tax_percent: li.tax_percent,
   })),
 });
+
+// The backend wraps single-document responses in `{ document }` (mirroring the
+// list envelope) and returns some numeric fields as strings (e.g.
+// `"unit_price": "12"`). The mock, in contrast, returns the raw Document with
+// numbers. Normalize both at the API boundary so the rest of the app can trust
+// the declared types.
+const toN = (v: unknown): number => {
+  if (v == null || v === "") return 0;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const normalizeDocument = (raw: unknown): Document => {
+  const r = raw as { document?: Document } & Document;
+  const d = (r?.document ?? r) as Document;
+  return {
+    ...d,
+    issue_date: d.issue_date
+      ? dayjs(d.issue_date).format("YYYY-MM-DD")
+      : d.issue_date,
+    lines: (d.lines ?? []).map((li) => ({
+      ...li,
+      quantity: toN(li.quantity),
+      unit_price: toN(li.unit_price),
+      discount_value:
+        li.discount_value === null || li.discount_value === undefined
+          ? null
+          : toN(li.discount_value),
+      tax_percent: toN(li.tax_percent),
+    })),
+  };
+};
+
+// The body payload the backend expects for POST / PATCH on a single line.
+// Kept in one place so create + update stay in sync.
+const lineBody = (l: LineFormValues) => ({
+  description: l.description,
+  quantity: l.quantity,
+  unit_price: l.unit_price,
+  discount_type: l.discount_type,
+  discount_value: l.discount_value,
+  tax_percent: l.tax_percent,
+});
+
+// Returns true if any user-editable field on the line differs from the server
+// copy. Numeric fields are compared as numbers so `"12"` (server string)
+// matches `12` (form number) after normalization.
+const nEq = (a: unknown, b: unknown): boolean => {
+  const an = a == null || a === "" ? null : Number(a);
+  const bn = b == null || b === "" ? null : Number(b);
+  return an === bn;
+};
+const lineChanged = (orig: LineItem, curr: LineFormValues): boolean =>
+  orig.description !== curr.description ||
+  !nEq(orig.quantity, curr.quantity) ||
+  !nEq(orig.unit_price, curr.unit_price) ||
+  orig.discount_type !== curr.discount_type ||
+  !nEq(orig.discount_value, curr.discount_value) ||
+  !nEq(orig.tax_percent, curr.tax_percent);
 
 // Parse an API validation field path like "lines.2.discount_value" → 2.
 const parseLineIndex = (field: string | undefined): number | null => {
@@ -102,12 +162,17 @@ export default function DocumentEditor() {
   const { data: doc, isLoading } = useQuery({
     queryKey: ["document", id],
     queryFn: async () => {
-      const { data } = await api.get<Document>(`/api/documents/${id}`);
-      return data;
+      const { data } = await api.get(`/api/documents/${id}`);
+      return normalizeDocument(data);
     },
     enabled: !isNew,
   });
 
+  // For same-id refetches (e.g., after a 409 invalidation) the Form is already
+  // mounted, so we need to sync new server data into the fields. Initial
+  // hydration is handled via `initialValues` below — not this effect — so we
+  // avoid the race where setFieldsValue on a freshly-mounted Form.List doesn't
+  // reliably populate its rows.
   useEffect(() => {
     if (doc) {
       form.setFieldsValue(docToForm(doc));
@@ -192,34 +257,79 @@ export default function DocumentEditor() {
   const saveDraft = useMutation({
     mutationFn: async (values: EditorFormValues) => {
       if (isNew) {
-        const { data } = await api.post<Document>("/api/documents", {
+        const { data } = await api.post("/api/documents", {
           title: values.title,
           customer: values.customer,
           issue_date: values.issue_date,
-          status: "draft",
-          lines: values.lines,
+          lines: values.lines.map((l) => lineBody(l)),
         });
-        return data;
+        return normalizeDocument(data);
       }
-      // For existing docs: PATCH metadata, then replace lines wholesale.
-      // See README ("Line sync strategy") for the tradeoff — we lose per-line
-      // id continuity but the code stays trivially simple.
-      await api.patch(`/api/documents/${id}`, {
-        title: values.title,
-        customer: values.customer,
-        issue_date: values.issue_date,
-      });
-      await api.delete(`/api/documents/${id}/lines`);
-      await api.post(`/api/documents/${id}/lines`, { lines: values.lines });
-      const { data } = await api.get<Document>(`/api/documents/${id}`);
-      return data;
+
+      // For existing docs: PATCH metadata (only if it changed), then diff the
+      // lines against the last-known server state. Only the lines that were
+      // added / removed / modified generate an API call — no wholesale replace,
+      // and per-line ids are preserved on updates.
+      const metaChanged =
+        !doc ||
+        doc.title !== values.title ||
+        doc.customer !== values.customer ||
+        doc.issue_date !== values.issue_date;
+      if (metaChanged) {
+        await api.patch(`/api/documents/${id}`, {
+          title: values.title,
+          customer: values.customer,
+          issue_date: values.issue_date,
+        });
+      }
+
+      const originalLines = (doc?.lines ?? []).filter(
+        (l): l is LineItem & { id: string } => !!l.id,
+      );
+      const currentIds = new Set(
+        values.lines.map((l) => l.id).filter((v): v is string => !!v),
+      );
+      const originalById = new Map(originalLines.map((l) => [l.id, l]));
+
+      // Deletions first — they can't collide with each other, run in parallel.
+      const toDelete = originalLines.filter((o) => !currentIds.has(o.id));
+      await Promise.all(
+        toDelete.map((l) =>
+          api.delete(`/api/documents/${id}/lines/${l.id}`),
+        ),
+      );
+
+      // Updates + creates run sequentially by array position. Sequential is a
+      // little slower but avoids racing the backend's per-op doc recompute.
+      for (let i = 0; i < values.lines.length; i++) {
+        const line = values.lines[i];
+        if (!line.id) {
+          await api.post(`/api/documents/${id}/lines`, {
+            ...lineBody(line),
+            position: i,
+          });
+          continue;
+        }
+        const orig = originalById.get(line.id);
+        if (orig && lineChanged(orig, line)) {
+          await api.patch(
+            `/api/documents/${id}/lines/${line.id}`,
+            lineBody(line),
+          );
+        }
+      }
+
+      const { data } = await api.get(`/api/documents/${id}`);
+      return normalizeDocument(data);
     },
     onSuccess: (saved) => {
       form.setFieldsValue(docToForm(saved));
       setIsDirty(false);
       setErrorLineIndex(null);
+      // Seed the query cache so the target route mounts with data (no Spin
+      // flash) when we redirect after creating a new doc.
+      qc.setQueryData(["document", saved.id], saved);
       qc.invalidateQueries({ queryKey: ["documents"] });
-      qc.invalidateQueries({ queryKey: ["document", saved.id] });
       message.success("Saved");
       if (isNew) navigate(`/documents/${saved.id}`, { replace: true });
     },
@@ -228,10 +338,8 @@ export default function DocumentEditor() {
 
   const finalize = useMutation({
     mutationFn: async () => {
-      const { data } = await api.post<Document>(
-        `/api/documents/${id}/finalize`,
-      );
-      return data;
+      const { data } = await api.post(`/api/documents/${id}/finalize`);
+      return normalizeDocument(data);
     },
     onSuccess: (saved) => {
       form.setFieldsValue(docToForm(saved));
@@ -257,16 +365,20 @@ export default function DocumentEditor() {
   const linesForTotals = useMemo(
     () =>
       lines.map((l) => ({
-        qty: l?.qty ?? 0,
-        unit: l?.unit ?? 0,
+        quantity: l?.quantity ?? 0,
+        unit_price: l?.unit_price ?? 0,
         discount_type: l?.discount_type ?? null,
         discount_value: l?.discount_value ?? null,
-        tax_pct: l?.tax_pct ?? 0,
+        tax_percent: l?.tax_percent ?? 0,
       })),
     [lines],
   );
 
-  if (!isNew && isLoading) {
+  // Wait until we have initial values before mounting the Form. AntD Form
+  // reads initialValues on mount only — if we mount it with `undefined` and
+  // try to setFieldsValue afterwards, Form.List's row bookkeeping can miss
+  // the first hydration.
+  if (!isNew && (isLoading || !doc)) {
     return (
       <div
         style={{
@@ -280,6 +392,10 @@ export default function DocumentEditor() {
       </div>
     );
   }
+
+  const initialValues: EditorFormValues = isNew
+    ? NEW_INITIAL
+    : docToForm(doc as Document);
 
   return (
     <div>
@@ -351,10 +467,11 @@ export default function DocumentEditor() {
 
       <Card>
         <Form<EditorFormValues>
+          key={id ?? "new"}
           form={form}
           layout="vertical"
           disabled={finalized}
-          initialValues={isNew ? NEW_INITIAL : undefined}
+          initialValues={initialValues}
           onValuesChange={() => {
             setIsDirty(true);
             if (errorLineIndex !== null) setErrorLineIndex(null);
